@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import sys
 import time
@@ -71,12 +72,27 @@ def _is_challenge_page(html: str) -> bool:
     return any(marker in title for marker in _CHALLENGE_MARKERS)
 
 
-def _fetch_html(url: str, retries: int = 5, timeout: int = 60, delay: float = 1.5) -> tuple[str, str]:
+def _fetch_html(url: str, retries: int = 5, timeout: int = 90, delay: float = 1.5) -> tuple[str, str]:
     """Fetch `url` (an mfsa.mt page) through the jina reader proxy as raw HTML.
     Returns (final_resolved_url, html). Retries with backoff if the proxy
     itself gets served a Cloudflare/WAF challenge page instead of real content."""
     target = url if url.startswith(JINA_PREFIX) else JINA_PREFIX + url
-    headers = {"X-Respond-With": "html"}
+    headers = {
+        "X-Respond-With": "html",
+        # jina's default "auto" engine prefers a lightweight curl-style fetch,
+        # which is exactly what Cloudflare challenges. Force the real browser.
+        "X-Engine": "browser",
+        # jina caches pages for 3600s - without this, once it has cached a
+        # challenge page every retry just gets the same bad copy back.
+        "X-No-Cache": "true",
+        "X-Timeout": "45",
+    }
+    # Optional: set JINA_API_KEY in the Function App's environment variables.
+    # With a key, jina can route through its own anti-bot proxy pool.
+    api_key = os.environ.get("JINA_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["X-Proxy"] = "auto"
     last_exc = None
     for attempt in range(retries):
         time.sleep(delay)
