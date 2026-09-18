@@ -183,8 +183,25 @@ def _eurlex_pdf_url(url: str) -> str:
     return url
 
 
-def scrape_source(source: dict, max_pages: int = 5) -> list[DocumentLink]:
-    """Scrape one SOURCES entry and return every article's title/URL/PDF-URL."""
+def _past(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() > deadline
+
+
+def scrape_source(
+    source: dict,
+    max_pages: int = 5,
+    skip_urls: set[str] | None = None,
+    deadline: float | None = None,
+) -> list[DocumentLink]:
+    """Scrape one SOURCES entry and return every article's title/URL/PDF-URL.
+
+    skip_urls: article URLs already recorded - their pages are NOT fetched
+    again, and paging stops at the first listing page where everything is
+    already known (listings are newest-first, so older pages are known too).
+    deadline: a time.monotonic() value; once passed, stop fetching and
+    return what we have. Articles are fetched OLDEST first, so whatever got
+    skipped is always the newest part and the next run picks it up."""
+    skip = skip_urls or set()
     url = _strip_jina_prefix(source["url"])
 
     if "eur-lex.europa.eu" in url:
@@ -222,8 +239,13 @@ def scrape_source(source: dict, max_pages: int = 5) -> list[DocumentLink]:
     articles: dict[str, str] = {}
     page_url = final_url
     for _ in range(max_pages):
-        for href, text in _extract_article_links(html, page_url):
+        page_links = _extract_article_links(html, page_url)
+        for href, text in page_links:
             articles.setdefault(href, text)
+        if page_links and all(href in skip for href, _ in page_links):
+            break  # whole page already recorded - older pages are too
+        if _past(deadline):
+            break
         next_url = _extract_next_page(html, page_url)
         if not next_url or next_url == page_url:
             break
@@ -231,7 +253,11 @@ def scrape_source(source: dict, max_pages: int = 5) -> list[DocumentLink]:
         _, html = _fetch_html(page_url)
 
     results = []
-    for article_url, listing_text in articles.items():
+    for article_url, listing_text in reversed(list(articles.items())):  # oldest first
+        if article_url in skip:
+            continue
+        if _past(deadline):
+            break
         try:
             _, article_html = _fetch_html(article_url)
         except (requests.RequestException, RuntimeError) as exc:
@@ -262,13 +288,20 @@ def scrape_source(source: dict, max_pages: int = 5) -> list[DocumentLink]:
     return results
 
 
-def scrape_all_sources(sources: list[dict], max_pages: int = 5) -> list[DocumentLink]:
+def scrape_all_sources(
+    sources: list[dict],
+    max_pages: int = 5,
+    skip_urls: set[str] | None = None,
+    deadline: float | None = None,
+) -> list[DocumentLink]:
     all_docs: list[DocumentLink] = []
     for i, source in enumerate(sources):
+        if _past(deadline):
+            break
         if i > 0:
             time.sleep(5)  # spread load out across sources to avoid bot-protection rate limits
         try:
-            all_docs.extend(scrape_source(source, max_pages=max_pages))
+            all_docs.extend(scrape_source(source, max_pages=max_pages, skip_urls=skip_urls, deadline=deadline))
         except Exception as exc:
             print(f"[warn] failed on {source['url']}: {exc}", file=sys.stderr)
     return all_docs
