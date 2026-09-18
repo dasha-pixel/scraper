@@ -35,6 +35,8 @@ from azure.storage.blob import BlobServiceClient
 from mfsa_pdf_scraper import SOURCES, DocumentLink, scrape_source
 from predict_pdf_link import predict_pdf_link
 
+logging.getLogger("azure").setLevel(logging.WARNING)
+
 CONTAINER = "scraper-data"
 BLOB_NAME = "new_articles.json"
 
